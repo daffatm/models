@@ -114,6 +114,71 @@ class Loss(six.with_metaclass(abc.ABCMeta, object)):
     pass
 
 
+class CiouLocalizationLoss(Loss):
+  """CIoU Localization Loss
+  
+  https://arxiv.org/abs/1911.08287.
+  """
+
+  def _compute_loss(self, prediction_tensor, target_tensor, weights):
+    """Compute loss function.
+
+    Args:
+      prediction_tensor: A float tensor of shape [batch_size, num_anchors,
+        code_size] representing the (encoded) predicted locations of objects.
+      target_tensor: A float tensor of shape [batch_size, num_anchors,
+        code_size] representing the regression targets
+      weights: a float tensor of shape [batch_size, num_anchors]
+
+    Returns:
+      loss: a float tensor of shape [batch_size, num_anchors] tensor
+        representing the value of the loss function.
+    """
+    # Split prediction and target tensors
+    x1, y1, x2, y2 = tf.split(prediction_tensor, 4, axis=-1)
+    x1g, y1g, x2g, y2g = tf.split(target_tensor, 4, axis=-1)
+
+    # Calculate coordinates of intersection
+    x1i = tf.maximum(x1, x1g)
+    y1i = tf.maximum(y1, y1g)
+    x2i = tf.minimum(x2, x2g)
+    y2i = tf.minimum(y2, y2g)
+
+    # Calculate area of intersection
+    inter_area = tf.maximum(x2i - x1i, 0) * tf.maximum(y2i - y1i, 0)
+
+    # Calculate area of prediction and target boxes
+    area1 = (x2 - x1) * (y2 - y1)
+    area2 = (x2g - x1g) * (y2g - y1g)
+
+    # Calculate area of union
+    union_area = area1 + area2 - inter_area
+
+    # Calculate IoU
+    iou = inter_area / (union_area + tf.keras.backend.epsilon())
+
+    # Calculate enclosed diagonal distance
+    c_x1 = tf.minimum(x1, x1g)
+    c_x2 = tf.maximum(x2, x2g)
+    c_y1 = tf.minimum(y1, y1g)
+    c_y2 = tf.maximum(y2, y2g)
+    c_diag = tf.square(c_x2 - c_x1) + tf.square(c_y2 - c_y1)
+
+    # Calculate center distance
+    center_distance = tf.square(x1 - x1g) + tf.square(y1 - y1g)
+
+    # Calculate aspect ratio term v
+    v = 4.0 * tf.square(tf.math.atan2(x2 - x1, y2 - y1) - tf.math.atan2(x2g - x1g, y2g - y1g)) / (tf.math.pi ** 2)
+
+    # Calculate Complete IoU (CIoU) loss
+    ciou = iou - (center_distance / c_diag + v * (1.0 - iou))
+
+    # Apply weights
+    ciou_loss = tf.reduce_sum(ciou * weights, axis=-1)  # Sum over anchor boxes
+
+    return ciou_loss
+  
+
 class WeightedL2LocalizationLoss(Loss):
   """L2 localization loss function with anchorwise output support.
 
