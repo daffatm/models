@@ -124,60 +124,100 @@ class CiouLocalizationLoss(Loss):
     """Compute loss function.
 
     Args:
-      prediction_tensor: A float tensor of shape [batch_size, num_anchors,
-        code_size] representing the (encoded) predicted locations of objects.
-      target_tensor: A float tensor of shape [batch_size, num_anchors,
-        code_size] representing the regression targets
+      prediction_tensor: A float tensor of shape [batch_size, num_anchors, 4] 
+        representing the decoded predicted locations of objects.
+      target_tensor: A float tensor of shape [batch_size, num_anchors, 4] 
+        representing the regression targets
       weights: a float tensor of shape [batch_size, num_anchors]
 
     Returns:
       loss: a float tensor of shape [batch_size, num_anchors] tensor
         representing the value of the loss function.
     """
-    # Split prediction and target tensors
-    x1, y1, x2, y2 = tf.split(prediction_tensor, 4, axis=-1)
-    x1g, y1g, x2g, y2g = tf.split(target_tensor, 4, axis=-1)
+    prediction_tensor = tf.Print(prediction_tensor, [prediction_tensor], 'Prediction tensor in CIOU loss: ', summarize=8)
+    target_tensor = tf.Print(target_tensor, [target_tensor], 'Target tensor in CIOU loss: ', summarize=8)
+    
+    # Change format [y_min, x_min, y_max, x_max] to [x, y, w, h]
+    # ymin_pred, xmin_pred, ymax_pred, xmax_pred = tf.split(prediction_tensor, num_or_size_splits=4, axis=-1)
+    # ymin_target, xmin_target, ymax_target, xmax_target = tf.split(target_tensor, num_or_size_splits=4, axis=-1)
+    
+    # x1_pred = int(xmin_pred + 640)
+    # y1_pred = int(ymin_pred + 640)
+    # x2_pred = int(xmax_pred + 640)
+    # y2_pred = int(ymax_pred + 640)
 
-    # Calculate coordinates of intersection
-    x1i = tf.maximum(x1, x1g)
-    y1i = tf.maximum(y1, y1g)
-    x2i = tf.minimum(x2, x2g)
-    y2i = tf.minimum(y2, y2g)
+    # x1_target = int(xmin_target + 640)
+    # y1_target = int(ymin_target + 640)
+    # x2_target = int(xmax_target + 640)
+    # y2_target = int(ymax_target + 640)
+    
+    # x_pred = xmin_pred
+    # y_pred = ymin_pred
+    # w_pred = xmax_pred - xmin_pred
+    # h_pred = ymax_pred - ymin_pred
+    
+    # x_target = xmin_target
+    # y_target = ymin_target
+    # w_target = xmax_target - xmin_target
+    # h_target = ymax_target - ymin_target
 
-    # Calculate area of intersection
-    inter_area = tf.maximum(x2i - x1i, 0) * tf.maximum(y2i - y1i, 0)
-
-    # Calculate area of prediction and target boxes
-    area1 = (x2 - x1) * (y2 - y1)
-    area2 = (x2g - x1g) * (y2g - y1g)
-
-    # Calculate area of union
-    union_area = area1 + area2 - inter_area
-
-    # Calculate IoU
-    iou = inter_area / (union_area + tf.keras.backend.epsilon())
-
-    # Calculate enclosed diagonal distance
-    c_x1 = tf.minimum(x1, x1g)
-    c_x2 = tf.maximum(x2, x2g)
-    c_y1 = tf.minimum(y1, y1g)
-    c_y2 = tf.maximum(y2, y2g)
-    c_diag = tf.square(c_x2 - c_x1) + tf.square(c_y2 - c_y1)
+    # prediction_tensor = tf.concat([x_pred, y_pred, w_pred, h_pred], axis=-1)
+    # target_tensor = tf.concat([x_target, y_target, w_target, h_target], axis=-1)
 
     # Calculate center distance
-    center_distance = tf.square(x1 - x1g) + tf.square(y1 - y1g)
+    center_distance = tf.reduce_sum(tf.square(target_tensor[..., :2] - prediction_tensor[..., :2]), axis=-1)
 
-    # Calculate aspect ratio term v
-    v = 4.0 * tf.square(tf.math.atan2(x2 - x1, y2 - y1) - tf.math.atan2(x2g - x1g, y2g - y1g)) / (tf.math.pi ** 2)
+    v = 4 * tf.square(tf.math.atan2(target_tensor[..., 2], target_tensor[..., 3]) - tf.math.atan2(prediction_tensor[..., 2], prediction_tensor[..., 3])) / (math.pi * math.pi)
 
-    # Calculate Complete IoU (CIoU) loss
-    ciou = iou - (center_distance / c_diag + v * (1.0 - iou))
+    # Transform [x, y, w, h] to [x_min, y_min, x_max, y_max]
+    target_tensor = tf.concat([target_tensor[..., :2] - target_tensor[..., 2:] * 0.5,
+                        target_tensor[..., :2] + target_tensor[..., 2:] * 0.5], axis=-1)
+    prediction_tensor = tf.concat([prediction_tensor[..., :2] - prediction_tensor[..., 2:] * 0.5,
+                        prediction_tensor[..., :2] + prediction_tensor[..., 2:] * 0.5], axis=-1)
+    target_tensor = tf.concat([tf.minimum(target_tensor[..., :2], target_tensor[..., 2:]),
+                        tf.maximum(target_tensor[..., :2], target_tensor[..., 2:])], axis=-1)
+    prediction_tensor = tf.concat([tf.minimum(prediction_tensor[..., :2], prediction_tensor[..., 2:]),
+                        tf.maximum(prediction_tensor[..., :2], prediction_tensor[..., 2:])], axis=-1)
 
-    # Apply weights
-    ciou_loss = tf.reduce_sum(ciou * weights, axis=-1)  # Sum over anchor boxes
+    # Calculate area of target_tensor and prediction_tensor
+    target_tensor_area = (target_tensor[..., 2] - target_tensor[..., 0]) * (target_tensor[..., 3] - target_tensor[..., 1])
+    prediction_tensor_area = (prediction_tensor[..., 2] - prediction_tensor[..., 0]) * (prediction_tensor[..., 3] - prediction_tensor[..., 1])
 
-    return ciou_loss
-  
+    # Calculate the two corners of the intersection
+    left_up = tf.maximum(target_tensor[..., :2], prediction_tensor[..., :2])
+    right_down = tf.minimum(target_tensor[..., 2:], prediction_tensor[..., 2:])
+
+    # Calculate area of intersection
+    inter_section = tf.maximum(right_down - left_up, 0.0)
+    inter_area = inter_section[..., 0] * inter_section[..., 1]
+
+    # Calculate union area
+    union_area = target_tensor_area + prediction_tensor_area - inter_area
+
+    # Calculate IoU, add epsilon in denominator to avoid dividing by 0
+    iou = inter_area / (union_area + tf.keras.backend.epsilon())
+
+    # Calculate the upper left and lower right corners of the minimum closed convex surface
+    enclose_left_up = tf.minimum(target_tensor[..., :2], prediction_tensor[..., :2])
+    enclose_right_down = tf.maximum(target_tensor[..., 2:], prediction_tensor[..., 2:])
+
+    # Calculate width and height of the minimum closed convex surface
+    enclose_wh = tf.maximum(enclose_right_down - enclose_left_up, 0.0)
+
+    # Calculate enclosed diagonal distance
+    enclose_diagonal = tf.reduce_sum(tf.square(enclose_wh), axis=-1)
+
+    # Calculate diou
+    diou = iou - 1.0 * center_distance / (enclose_diagonal + tf.keras.backend.epsilon())
+
+    # Calculate param v and alpha to CIoU
+    alpha = v / (1.0 - iou + v)
+
+    # Calculate ciou
+    ciou = diou - alpha * v
+
+    return tf.reduce_mean(ciou, axis=-1)  # Return the mean CIoU over all anchors in the batch
+
 
 class WeightedL2LocalizationLoss(Loss):
   """L2 localization loss function with anchorwise output support.
